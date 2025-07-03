@@ -10,6 +10,7 @@ h.getFWHM = @getFWHM;
 h.getMTFfromStar = @getMTFfromStar;
 h.extrapolateLowLPMM = @extrapolateLowLPMM;
 h.create2DPSFfromFWHM = @create2DPSFfromFWHM;
+h.getMTF50 = @getMTF50;
 end
 
 function [lpmm,mtf,ctf] = getMTFfromStar(star,magnification,pxsize,showplots,cx,cy)
@@ -203,11 +204,11 @@ deltatheta = 2*pi/ntheta;
 
 if strcmp(linlog,'linear')
     deltarad = rmax/(nrad-1);
-    [theta, radius] = meshgrid([0:ntheta-1]*deltatheta, [0:nrad-1]*deltarad);
+    [theta, radius] = meshgrid((0:ntheta-1)*deltatheta, (0:nrad-1)*deltarad);
 elseif strcmp(linlog,'log')
     maxlogr = log(rmax);
     deltalogr = maxlogr/(nrad-1);
-    [theta, radius] = meshgrid([0:ntheta-1]*deltatheta, exp([0:nrad-1]*deltalogr));
+    [theta, radius] = meshgrid((0:ntheta-1)*deltatheta, exp((0:nrad-1)*deltalogr));
 else
     error('Invalid radial transformtion (must be linear or log)');
 end
@@ -338,7 +339,7 @@ cx = (nx+1)/2;
 cy = (ny+1)/2;
 
 % convert FWHM to sigma in px
-% attention: the FWHM is in mm, the pxsize in �m.
+% attention: the FWHM is in mm, the pxsize in �m.
 % also: FWHM of PSF is object side, we need image side, so multiply by
 % magnification
 fwhm_px = fwhm*1000/pxsize*magnification;
@@ -358,4 +359,91 @@ end
 
 function g = gaussian(x,pos,wid)
 g = exp(-((x-pos)./(0.6006.*wid)) .^2);
+end
+
+function mtf50 = getMTF50(lpmm, mtf)
+% getMTF50 - 计算MTF值为0.5时对应的空间频率
+%
+% 输入:
+%   lpmm - 空间频率向量 (线对/毫米)
+%   mtf  - 对应的MTF值
+%
+% 输出:
+%   mtf50 - MTF值为0.5时对应的空间频率 (线对/毫米)
+%
+% 如果MTF数据中有NaN值，会先尝试去除，然后再计算
+
+% 确保输入是列向量，便于处理
+lpmm = lpmm(:);
+mtf = mtf(:);
+
+% 去除NaN值
+validIdx = ~isnan(mtf) & ~isnan(lpmm);
+validLpmm = lpmm(validIdx);
+validMTF = mtf(validIdx);
+
+% 确保数据是单调的，对于MTF曲线，我们希望MTF随频率增加而减小
+% 首先按照空间频率排序
+[sortedLpmm, sortIdx] = sort(validLpmm);
+sortedMTF = validMTF(sortIdx);
+
+% 我们希望MTF曲线是单调递减的，通常低频有高MTF值，高频有低MTF值
+validLpmm = sortedLpmm;
+validMTF = sortedMTF;
+
+% 如果MTF曲线中最小值大于0.5，无法计算MTF50
+if min(validMTF) > 0.5
+    warning('MTF曲线最小值大于0.5，无法准确计算MTF50。');
+    mtf50 = NaN;
+    return;
+end
+
+% 如果MTF曲线中最大值小于0.5，也无法计算MTF50
+if max(validMTF) < 0.5
+    warning('MTF曲线最大值小于0.5，无法准确计算MTF50。');
+    mtf50 = NaN;
+    return;
+end
+
+% 确保MTF值是严格单调的，这样interp1不会出错
+% 这里我们只保留MTF值严格递减的部分
+[uniqueMTF, uniqueIdx] = unique(validMTF, 'stable');
+uniqueLpmm = validLpmm(uniqueIdx);
+
+% 如果MTF值不是严格单调的，可能会导致插值问题
+if any(diff(uniqueMTF) == 0)
+    fprintf('注意: MTF数据中存在相同MTF值，已进行处理。\n');
+    
+    % 找到所有严格递减或递增的MTF值
+    % 对于MTF曲线，通常是随频率增加而递减
+    decreasing = diff(uniqueMTF) < 0;
+    
+    if sum(decreasing) > sum(~decreasing)
+        % 曲线应该是递减的
+        idx = find(decreasing);
+        uniqueMTF = uniqueMTF([1; idx+1]);
+        uniqueLpmm = uniqueLpmm([1; idx+1]);
+    else
+        % 曲线应该是递增的，这通常是不正常的，但我们还是处理一下
+        idx = find(~decreasing);
+        uniqueMTF = uniqueMTF([1; idx+1]);
+        uniqueLpmm = uniqueLpmm([1; idx+1]);
+    end
+end
+
+% 确保MTF的取值范围包含0.5
+if min(uniqueMTF) > 0.5 || max(uniqueMTF) < 0.5
+    warning('MTF曲线不包含值0.5，无法计算MTF50。');
+    mtf50 = NaN;
+else
+    % 使用线性插值计算MTF为0.5时对应的空间频率
+    mtf50 = interp1(uniqueMTF, uniqueLpmm, 0.5, 'linear');
+end
+
+% 输出结果
+if ~isnan(mtf50)
+    fprintf('MTF50 = %.2f lp/mm\n', mtf50);
+else
+    fprintf('无法计算MTF50值\n');
+end
 end
